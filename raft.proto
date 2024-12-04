@@ -3,7 +3,7 @@ syntax = "proto3";
 package raft;
 
 // Thêm go_package
-option go_package = "yourmodule/raft;raft"; // Thay thế "yourmodule" bằng module của bạn
+option go_package = "services/raft;raft"; // Thay thế "yourmodule" bằng module của bạn
 
 // Các thông điệp
 message RequestVoteRequest {
@@ -49,6 +49,7 @@ message VoteResponse {
 // Thêm các thông điệp cho chức năng requestLeader
 message RequestLeaderRequest {
     int32 term = 1; // Thời gian hiện tại của node
+    int32 leaderId = 2;     // id của leader
 }
 
 message RequestLeaderResponse {

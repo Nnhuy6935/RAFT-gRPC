@@ -22,6 +22,8 @@ const (
 	Raft_RequestVote_FullMethodName   = "/raft.Raft/RequestVote"
 	Raft_AppendEntries_FullMethodName = "/raft.Raft/AppendEntries"
 	Raft_RequestLeader_FullMethodName = "/raft.Raft/RequestLeader"
+	Raft_RegisterNode_FullMethodName  = "/raft.Raft/RegisterNode"
+	Raft_GetNodeList_FullMethodName   = "/raft.Raft/GetNodeList"
 )
 
 // RaftClient is the client API for Raft service.
@@ -32,7 +34,10 @@ const (
 type RaftClient interface {
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesResponse, error)
+	// Phương thức mới
 	RequestLeader(ctx context.Context, in *RequestLeaderRequest, opts ...grpc.CallOption) (*RequestLeaderResponse, error)
+	RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*Response, error)
+	GetNodeList(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*NodeList, error)
 }
 
 type raftClient struct {
@@ -73,6 +78,26 @@ func (c *raftClient) RequestLeader(ctx context.Context, in *RequestLeaderRequest
 	return out, nil
 }
 
+func (c *raftClient) RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Response)
+	err := c.cc.Invoke(ctx, Raft_RegisterNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *raftClient) GetNodeList(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*NodeList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeList)
+	err := c.cc.Invoke(ctx, Raft_GetNodeList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RaftServer is the server API for Raft service.
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility.
@@ -81,7 +106,10 @@ func (c *raftClient) RequestLeader(ctx context.Context, in *RequestLeaderRequest
 type RaftServer interface {
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error)
+	// Phương thức mới
 	RequestLeader(context.Context, *RequestLeaderRequest) (*RequestLeaderResponse, error)
+	RegisterNode(context.Context, *NodeInfo) (*Response, error)
+	GetNodeList(context.Context, *Empty) (*NodeList, error)
 	mustEmbedUnimplementedRaftServer()
 }
 
@@ -100,6 +128,12 @@ func (UnimplementedRaftServer) AppendEntries(context.Context, *AppendEntriesRequ
 }
 func (UnimplementedRaftServer) RequestLeader(context.Context, *RequestLeaderRequest) (*RequestLeaderResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestLeader not implemented")
+}
+func (UnimplementedRaftServer) RegisterNode(context.Context, *NodeInfo) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterNode not implemented")
+}
+func (UnimplementedRaftServer) GetNodeList(context.Context, *Empty) (*NodeList, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNodeList not implemented")
 }
 func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 func (UnimplementedRaftServer) testEmbeddedByValue()              {}
@@ -176,6 +210,42 @@ func _Raft_RequestLeader_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Raft_RegisterNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NodeInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).RegisterNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_RegisterNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).RegisterNode(ctx, req.(*NodeInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Raft_GetNodeList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).GetNodeList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_GetNodeList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).GetNodeList(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -194,6 +264,14 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequestLeader",
 			Handler:    _Raft_RequestLeader_Handler,
+		},
+		{
+			MethodName: "RegisterNode",
+			Handler:    _Raft_RegisterNode_Handler,
+		},
+		{
+			MethodName: "GetNodeList",
+			Handler:    _Raft_GetNodeList_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

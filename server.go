@@ -7,18 +7,17 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	// "time"
 
-	"main/yourmodule/raft" // Thay thế bằng module của bạn
+	"main/yourmodule/raft"
 
+	"github.com/hashicorp/consul/api"
 	"google.golang.org/grpc"
 )
-
-// ----------- CENTRAL NODE ----------------
-
-// ------------------ SERVER ----------------
 
 type Server struct {
 	raft.UnimplementedRaftServer
@@ -29,6 +28,9 @@ type Server struct {
 	log      []string
 	peers    []string
 	mu       sync.Mutex
+	// raft.UnimplementedNodeRegistryServer
+	nodes        []raft.NodeInfo
+	consulClient *api.Client
 }
 
 func NewServer(id int32, peers []string) *Server {
@@ -72,7 +74,7 @@ func (s *Server) AppendEntries(ctx context.Context, req *raft.AppendEntriesReque
 }
 
 func (s *Server) Start() {
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", 8000+s.id))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 8000+s.id))
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
@@ -86,35 +88,50 @@ func (s *Server) Start() {
 	}
 }
 func (s *Server) startElection() {
-	for index := 0; index < len(s.peers); index++ {
-		log.Printf(s.peers[index])
+	// for index := 0; index < len(s.peers); index++ {
+	// 	log.Printf(s.peers[index])
+	// }
+	list, err := s.GetNodeList(context.Background(), &raft.Empty{})
+	if err != nil {
+		log.Println(err)
+		return
 	}
-	log.Printf("Number of peers in network %d", len(s.peers))
-	for _, peer := range []int32{2, 3} { // Giả định rằng bạn có 3 node với ID 1, 2, 3
-		conn, err := grpc.Dial(fmt.Sprintf("localhost:%d", 50050+peer), grpc.WithInsecure())
+	countVote := 0
+	for i := 0; i < len(list.Nodes); i++ {
+		conn, err := grpc.Dial(list.Nodes[i].Address, grpc.WithInsecure())
 		if err != nil {
-			log.Printf("Failed to connect to node %d: %v", peer, err)
+			log.Printf("Failed to connect to node %s: %v", list.Nodes[i].Address, err)
 			continue
 		}
+		// đảm bảo đóng kết nối ngay sau khi sử dụng
 		defer conn.Close()
 
 		client := raft.NewRaftClient(conn)
+		log.Printf("REQUEST VOTE INFORMATION term(%d) and candidate id(%d)", s.term, int(s.leaderId))
 		req := &raft.RequestVoteRequest{
 			Term:        s.term,
 			CandidateId: s.leaderId,
 		}
 
+		log.Printf("start request vote for client ")
 		resp, err := client.RequestVote(context.Background(), req)
+		conn.Close()
 		if err != nil {
-			log.Printf("Error while requesting vote from node %d: %v", peer, err)
+			log.Printf("Error while requesting vote from node %s: %v", list.Nodes[i].Address, err)
 			continue
 		}
 
 		if resp.VoteGranted {
-			log.Printf("Node %d granted vote to node %d", peer, s.leaderId)
+			log.Printf("Node %s granted vote to node %d", list.Nodes[i].Address, s.leaderId)
+			countVote++
 		} else {
-			log.Printf("Node %d denied vote to node %d", peer, s.leaderId)
+			log.Printf("Node %s denied vote to node %d", list.Nodes[i].Address, s.leaderId)
 		}
+	}
+	if countVote > len(list.Nodes)/2 {
+		log.Printf("Node %d has received enough votes to become the leader", s.leaderId)
+	} else {
+		log.Printf("Node %d did not receive enough votes to become the leader", s.leaderId)
 	}
 }
 func (s *Server) RequestLeader(ctx context.Context, req *raft.RequestLeaderRequest) (*raft.RequestLeaderResponse, error) {
@@ -145,15 +162,88 @@ func (s *Server) runElectionProcess() {
 	s.startElection()
 }
 
-func main() {
-	// peers := []string{"localhost:8001", "localhost:8002", "localhost:8003"} // Thay đổi theo số lượng node
-	// for i := 0; i < len(peers); i++ {
-	// 	server := NewServer(int32(i), peers)
-	// 	go server.Start()
-	// }
+// Đăng ký node
+func (s *Server) RegisterNode(ctx context.Context, node *raft.NodeInfo) (*raft.Response, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	//register node with consul
 
-	// cn := StartCentralNode() // khởi tạo node trung gian
-	// log.Println(cn)
+	// Tách địa chỉ IP và cổng
+	parts := strings.Split(node.Address, ":")
+	port, err := strconv.Atoi(parts[1])
+	if err != nil {
+		log.Printf("error when convert from int to string %v", err)
+	}
+
+	registration := &api.AgentServiceRegistration{
+		ID:      fmt.Sprintf("%d", node.Id), // Sử dụng địa chỉ làm ID
+		Name:    "agent_service",
+		Port:    port,
+		Address: parts[0],
+	}
+
+	error := s.consulClient.Agent().ServiceRegister(registration)
+	if error != nil {
+		log.Printf("error in ServiceRegister: %v", error)
+		return &raft.Response{Success: false, Message: error.Error()}, nil
+	}
+
+	s.nodes = append(s.nodes, *node) // Thêm node vào danh sách
+	return &raft.Response{Success: true, Message: "Node registered successfully"}, nil
+}
+
+// Lấy danh sách node trong mạng
+func (s *Server) GetNodeList(ctx context.Context, empty *raft.Empty) (*raft.NodeList, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	//lấy danh sách các node từ consul
+	services, err := s.consulClient.Agent().Services()
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []raft.NodeInfo
+	for _, service := range services {
+		// get service id and convert to int32
+		id, err := strconv.Atoi(service.ID)
+		if err != nil {
+			log.Printf("error %v", err)
+		}
+		nodes = append(nodes, raft.NodeInfo{Id: int32(id), Address: fmt.Sprintf("%s:%d", service.Address, service.Port)}) // ID có thể được điều chỉnh
+	}
+	//CONVERT
+	var nodePointers []*raft.NodeInfo
+
+	for i := range nodes {
+		nodePointers = append(nodePointers, &nodes[i])
+	}
+	//END CONVERT
+	log.Printf("get node list with result is %d", len(nodePointers))
+	return &raft.NodeList{Nodes: nodePointers}, nil
+}
+
+type Service struct {
+	consulClient *api.Client
+}
+
+func NewService(port int) (*Service, error) {
+	// Tạo cấu hình cho Consul
+	config := api.DefaultConfig()
+
+	// chỉ định địa chỉ của consul
+	config.Address = "127.0.0.1:8500"
+
+	// Khởi tạo Consul client
+	client, err := api.NewClient(config)
+	if err != nil {
+		log.Println("Unable to contact Service Discovery.")
+		return nil, err
+	}
+
+	return &Service{consulClient: client}, nil
+}
+
+func main() {
 
 	if len(os.Args) < 3 {
 		log.Fatalf("Usage: %s <node_id> <port>", os.Args[0])
@@ -169,35 +259,47 @@ func main() {
 		log.Fatalf("Invalid port: %v", err)
 	}
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	} else {
 		log.Println(lis.Addr().Network())
 	}
+	service, err := NewService(port)
+	if err != nil {
+		log.Fatalf("Error creating service: %v", err)
+	}
 
 	srv := &Server{leaderId: int32(id), term: 1} // Tạo instance của server
+	srv.consulClient = service.consulClient
 	grpcServer := grpc.NewServer()
 	raft.RegisterRaftServer(grpcServer, srv)
+	//đảm bảo khởi tạo trước khi sử dụng
+	srv.nodes = make([]raft.NodeInfo, 0)
 
-	// log.Println("number of peer in network %d", len(cn.nodes))
-	// for index := 0; index < len(cn.nodes); index++ {
-	// 	log.Println(cn.nodes[int32(index)])
+	node := &raft.NodeInfo{Id: int32(id), Address: fmt.Sprintf("127.0.0.1:%d", port)}
+	response, err := srv.RegisterNode(context.Background(), node)
+	if err != nil {
+		log.Println(err)
+	}
+
+	log.Println(response.Message)
+	// time.Sleep(20 * time.Second)
+	// nodes, err := srv.GetNodeList(context.Background(), &raft.Empty{})
+	// if err != nil {
+	// 	log.Printf("failed on get node list %v", err)
 	// }
+	// log.Printf("number of node in network is %d", len(nodes.Nodes))
 
-	// go func() {
-	// 	// Chờ 20 giây
-	// 	time.Sleep(20 * time.Second)
+	go func() {
+		// Chờ 20 giây
+		time.Sleep(20 * time.Second)
 
-	// 	// Bắt đầu bầu cử nếu không nhận được yêu cầu bầu cử nào
-	// 	log.Printf("Node %d starting election after waiting 20 seconds", id)
-	// 	srv.runElectionProcess() // Gọi runElectionProcess từ instance của server
-	// }()
-
-	// log.Printf("Node %d started on port %d", id, port)
-	// if err := grpcServer.Serve(lis); err != nil {
-	// 	log.Fatalf("failed to serve: %v", err)
-	// }
+		// Bắt đầu bầu cử nếu không nhận được yêu cầu bầu cử nào
+		log.Printf("Node %d starting election after waiting 20 seconds", id)
+		srv.runElectionProcess() // Gọi runElectionProcess từ instance của server
+	}()
+	time.Sleep(100 * time.Second)
 
 	// Để giữ cho main goroutine không kết thúc
 	select {}

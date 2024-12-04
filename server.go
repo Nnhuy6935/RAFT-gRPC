@@ -88,9 +88,7 @@ func (s *Server) Start() {
 	}
 }
 func (s *Server) startElection() {
-	// for index := 0; index < len(s.peers); index++ {
-	// 	log.Printf(s.peers[index])
-	// }
+
 	list, err := s.GetNodeList(context.Background(), &raft.Empty{})
 	if err != nil {
 		log.Println(err)
@@ -115,7 +113,6 @@ func (s *Server) startElection() {
 
 		log.Printf("start request vote for client ")
 		resp, err := client.RequestVote(context.Background(), req)
-		conn.Close()
 		if err != nil {
 			log.Printf("Error while requesting vote from node %s: %v", list.Nodes[i].Address, err)
 			continue
@@ -263,7 +260,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	} else {
-		log.Println(lis.Addr().Network())
+		log.Println(lis.Addr())
 	}
 	service, err := NewService(port)
 	if err != nil {
@@ -274,6 +271,16 @@ func main() {
 	srv.consulClient = service.consulClient
 	grpcServer := grpc.NewServer()
 	raft.RegisterRaftServer(grpcServer, srv)
+
+	go func() {
+		log.Println("Starting gRPC server...")
+		err = grpcServer.Serve(lis)
+		if err != nil {
+			log.Fatalf("Failed to serve: %v", err)
+		}
+		log.Println("gRPC server started successfully.")
+	}()
+
 	//đảm bảo khởi tạo trước khi sử dụng
 	srv.nodes = make([]raft.NodeInfo, 0)
 
@@ -284,12 +291,6 @@ func main() {
 	}
 
 	log.Println(response.Message)
-	// time.Sleep(20 * time.Second)
-	// nodes, err := srv.GetNodeList(context.Background(), &raft.Empty{})
-	// if err != nil {
-	// 	log.Printf("failed on get node list %v", err)
-	// }
-	// log.Printf("number of node in network is %d", len(nodes.Nodes))
 
 	go func() {
 		// Chờ 20 giây
@@ -299,7 +300,6 @@ func main() {
 		log.Printf("Node %d starting election after waiting 20 seconds", id)
 		srv.runElectionProcess() // Gọi runElectionProcess từ instance của server
 	}()
-	time.Sleep(100 * time.Second)
 
 	// Để giữ cho main goroutine không kết thúc
 	select {}

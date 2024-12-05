@@ -17,12 +17,16 @@ import (
 )
 
 const (
-	HEART_BEAT_TIMEOUT = 10000 // đơn vị tính băng ms
-	ELECTION_TIMEOUT   = 30000
+	// HEART_BEAT_TIMEOUT = 1000 // đơn vị tính băng ms
+	// ELECTION_TIMEOUT   = 3000
+	HEART_BEAT_TIMEOUT = 1000 // đơn vị tính băng ms
+	ELECTION_TIMEOUT   = 3000
 	CANDIDATE          = 1
 	FOLLOWER           = 0
 	LEADER             = 2
 )
+
+var restartChan chan bool
 
 type Server struct {
 	raft.UnimplementedRaftServer
@@ -55,23 +59,27 @@ func NewServer(id int32) *Server {
 func (s *Server) RequestVote(ctx context.Context, req *raft.RequestVoteRequest) (*raft.RequestVoteResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// log.Printf("request vote with information {term: %d , candiate %s} with server information {voteFor: %d, term %d}", req.Term, req.CandidateId, s.votedFor, s.term)
+	log.Printf("TERM %d : GET REQUEST VOTE FOR %d", req.Term, req.CandidateId)
+	s.term = req.Term
 
-	if s.leaderId != -1 {
+	if s.leaderId != -1 || s.status == LEADER {
 		s.electionTimeout = ELECTION_TIMEOUT
+		restartRoroutine(restartChan)
 		return &raft.RequestVoteResponse{Term: s.term, VoteGranted: false}, nil
 	}
 	if req.Term > s.term {
-		s.term = req.Term
 		s.votedFor = -1 // Reset votedFor
 	}
+
 	if (s.votedFor == -1 || s.votedFor == req.CandidateId) && req.Term == s.term {
 		s.votedFor = req.CandidateId
 		s.electionTimeout = ELECTION_TIMEOUT
+		restartRoroutine(restartChan)
 		return &raft.RequestVoteResponse{Term: s.term, VoteGranted: true}, nil
 	}
 
 	s.electionTimeout = ELECTION_TIMEOUT
+	restartRoroutine(restartChan)
 	return &raft.RequestVoteResponse{Term: s.term, VoteGranted: false}, nil
 }
 
@@ -103,13 +111,15 @@ func (s *Server) Start() {
 	}
 }
 func (s *Server) startElection() {
-
+	log.Printf("TERM %d: START ELECTION TO BECOME LEADER", s.term)
 	list, err := s.GetNodeList(context.Background(), &raft.Empty{})
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	countVote := 0
+	countResponse := 0
+	s.term += 1
 	for i := 0; i < len(list.Nodes); i++ {
 		// bỏ qua và không gửi request tới chính nó
 		if s.id == list.Nodes[i].Id {
@@ -126,39 +136,43 @@ func (s *Server) startElection() {
 		defer conn.Close()
 
 		client := raft.NewRaftClient(conn)
-		// log.Printf("REQUEST VOTE INFORMATION term(%d) and candidate id(%d)", s.term, int(s.leaderId))
+
 		req := &raft.RequestVoteRequest{
-			Term:        s.term + 1,
-			CandidateId: s.leaderId,
+			Term:        s.term,
+			CandidateId: s.id,
 		}
 
-		// log.Printf("start request vote for client ")
 		resp, err := client.RequestVote(context.Background(), req)
 		if err != nil {
 			log.Printf("Error while requesting vote from node %s: %v", list.Nodes[i].Address, err)
 			continue
 		}
+		if resp.Term == s.term {
+			countResponse++
+		}
 
 		if resp.VoteGranted {
-			log.Printf("Node %s granted vote to node %d", list.Nodes[i].Address, s.leaderId)
+			log.Printf("TERM %d: Node %s granted vote to node %d", s.term, list.Nodes[i].Address, s.leaderId)
 			countVote++
 		} else {
-			log.Printf("Node %s denied vote to node %d", list.Nodes[i].Address, s.leaderId)
+			log.Printf("TERM %d: Node %s denied vote to node %d", s.term, list.Nodes[i].Address, s.leaderId)
 		}
 	}
-	if countVote > len(list.Nodes)/2 {
-		log.Printf("Node %d has received enough votes to become the leader", s.id)
+	// if countVote > len(list.Nodes)/2 {
+	if countVote > countResponse/2 {
 		s.status = LEADER
 		s.heartbeatTimeout = HEART_BEAT_TIMEOUT
+		s.leaderId = s.id
 	} else {
-		log.Printf("Node %d did not receive enough votes to become the leader", s.id)
 		s.status = FOLLOWER
 		s.electionTimeout = ELECTION_TIMEOUT
+		s.leaderId = -1
 	}
 }
 
 // hàm thực hiện việc gửi tín hiệu định kỳ tới các node follower
 func (s *Server) sendHearbeatMessage() {
+	log.Printf("TERM %d: SEND HEART BEAT MESSAGE TO FOLLOWER", s.term)
 	// duyệt qua từng node trong mạng để request leader mới
 	list, err := s.GetNodeList(context.Background(), &raft.Empty{})
 	if err != nil {
@@ -175,7 +189,7 @@ func (s *Server) sendHearbeatMessage() {
 
 		conn, err := grpc.Dial(list.Nodes[i].Address, grpc.WithInsecure())
 		if err != nil {
-			log.Printf("Failed to connect to node %s: %v", list.Nodes[i].Address, err)
+			log.Printf("TERM %d: Failed to connect to node %s: %v", s.term, list.Nodes[i].Address, err)
 			continue
 		}
 		// đảm bảo đóng kết nối ngay sau khi sử dụng
@@ -185,13 +199,15 @@ func (s *Server) sendHearbeatMessage() {
 
 		//setup requestLeaderRequest
 		req := &raft.RequestLeaderRequest{
-			Term: s.term,
+			Term:     s.term,
+			LeaderId: s.id,
 		}
 		response, err := client.RequestLeader(context.Background(), req)
 		if err != nil {
-			log.Printf("Error while requesting leader from node %s", list.Nodes[i].Address)
+			log.Printf("TERM %d: Error while requesting leader from node %s", s.term, list.Nodes[i].Address)
+			continue
 		}
-		log.Printf(response.String())
+		log.Printf("TERM %d: RESPONSE %s", response.Term, response.String())
 	}
 	s.heartbeatTimeout = HEART_BEAT_TIMEOUT
 }
@@ -199,13 +215,18 @@ func (s *Server) sendHearbeatMessage() {
 func (s *Server) RequestLeader(ctx context.Context, req *raft.RequestLeaderRequest) (*raft.RequestLeaderResponse, error) {
 	// Logic để chọn leader
 	// Ở đây, bạn có thể thực hiện logic của riêng mình để xác định leader
+	log.Printf("TERM %d: RECEIVED REQUEST LEADER from %d -- CURRENT LEADER IN SERVER IS %d - STATUS %d - SERVER TERM %d", req.Term, req.LeaderId, s.leaderId, s.status, s.term)
 
 	// kiểm tra leaderid
-	if req.Term == s.term && s.leaderId != -1 {
+	if s.status != LEADER && (s.term == req.Term || s.leaderId == -1) {
 		s.status = FOLLOWER
+		s.electionTimeout = ELECTION_TIMEOUT
 		s.heartbeatTimeout = HEART_BEAT_TIMEOUT
 		s.term = req.Term
 		s.leaderId = req.LeaderId
+		log.Printf("TERM %d: AFTER RECEIVED REQUEST LEADER from %d -- CURRENT LEADER IN SERVER IS %d - STATUS %d", req.Term, req.LeaderId, s.leaderId, s.status)
+
+		restartRoroutine(restartChan)
 		return &raft.RequestLeaderResponse{
 			Term:     s.term,
 			LeaderId: s.leaderId,
@@ -314,6 +335,12 @@ func NewService(port int) (*Service, error) {
 	return &Service{consulClient: client}, nil
 }
 
+func restartRoroutine(restart chan bool) {
+	go func() {
+		restart <- true
+	}()
+}
+
 func main() {
 
 	if len(os.Args) < 3 {
@@ -346,18 +373,6 @@ func main() {
 	grpcServer := grpc.NewServer()
 	raft.RegisterRaftServer(grpcServer, srv)
 
-	// lắng nghe các request từ các node khác
-	go func() {
-		for {
-			// log.Println("Starting gRPC server...")
-			err = grpcServer.Serve(lis)
-			if err != nil {
-				log.Fatalf("Failed to serve: %v", err)
-			}
-			// log.Println("gRPC server started successfully.")
-		}
-	}()
-
 	//đảm bảo khởi tạo trước khi sử dụng
 	srv.nodes = make([]raft.NodeInfo, 0)
 
@@ -368,67 +383,94 @@ func main() {
 	}
 
 	log.Println(response.Message)
+
+	restartChan = make(chan bool)
+
+	// lắng nghe các request từ các node khác
 	go func() {
 		for {
-			switch srv.status {
-			case FOLLOWER:
+			err = grpcServer.Serve(lis)
+			if err != nil {
+				log.Fatalf("Failed to serve: %v", err)
+			}
+		}
+	}()
+	go func(restart chan bool) {
+		log.Printf("ENTER CONSIDER STATUS OF SERVER")
+		for {
+			select {
+			case <-restart:
 				{
-					log.Printf("status FOLLOWER")
-					// trường hợp chưa chọn leader thì sẽ thực hiện đếm ngược thời gian để trở thành candidate
-					if srv.leaderId == -1 {
-						// Chờ một khoảng thời gian electionTimeout
-						startTime := time.Now()
-						for srv.electionTimeout > 0 {
-							currentTime := time.Now()
-							duration := currentTime.Sub(startTime).Milliseconds()
-							srv.electionTimeout -= int(duration)
-							startTime = currentTime
+					break
+				}
+			default:
+				{
+					switch srv.status {
+					case FOLLOWER:
+						{
+							log.Printf("status FOLLOWER")
+							// trường hợp chưa chọn leader thì sẽ thực hiện đếm ngược thời gian để trở thành candidate
+							if srv.leaderId == -1 {
+								// Chờ một khoảng thời gian electionTimeout
+								startTime := time.Now()
+								for srv.electionTimeout > 0 {
+									if srv.leaderId != -1 {
+										break
+									}
+									currentTime := time.Now()
+									duration := currentTime.Sub(startTime).Milliseconds()
+									srv.electionTimeout -= int(duration)
+									startTime = currentTime
+									// log.Printf("COUNT ELECTION TIMEOUT END!! %d", srv.electionTimeout)
+								}
+								if srv.electionTimeout <= 0 {
+									srv.status = CANDIDATE
+								}
+								break
+							}
+							//trường hợp đã chọn leader thì sẽ thực hiện đếm ngược thời gian để trở thành follower
+							startTime := time.Now()
+							for srv.heartbeatTimeout > 0 {
+								currentTime := time.Now()
+								duration := currentTime.Sub(startTime).Milliseconds()
+								srv.heartbeatTimeout -= int(duration)
+								startTime = currentTime
+							}
+							if srv.heartbeatTimeout <= 0 {
+								srv.electionTimeout = ELECTION_TIMEOUT
+								srv.leaderId = -1
+							}
+							break
 						}
-						if srv.electionTimeout <= 0 {
+					case CANDIDATE:
+						{
+							log.Printf("status CANDIATE")
 							// bắt đầu gửi request bầu cử
-							log.Printf("START ELECTION REQUEST")
 							srv.runElectionProcess() // Gọi runElectionProcess từ instance của server
+							break
 						}
-						break
-					}
-					//trường hợp đã chọn leader thì sẽ thực hiện đếm ngược thời gian để trở thành follower
-					startTime := time.Now()
-					for srv.heartbeatTimeout > 0 {
-						currentTime := time.Now()
-						duration := currentTime.Sub(startTime).Milliseconds()
-						srv.heartbeatTimeout -= int(duration)
-						startTime = currentTime
-					}
-					if srv.heartbeatTimeout <= 0 {
-						srv.electionTimeout = ELECTION_TIMEOUT
-						srv.leaderId = -1
-					}
-					break
-				}
-			case CANDIDATE:
-				{
-					// log.Printf("status CANDIATE")
-					break
-				}
-			case LEADER:
-				{
-					log.Printf("status LEADER")
-					startTime := time.Now()
-					for srv.heartbeatTimeout > 0 {
-						currentTime := time.Now()
-						duration := currentTime.Sub(startTime).Milliseconds()
-						srv.heartbeatTimeout -= int(duration)
-						startTime = currentTime
-					}
-					if srv.heartbeatTimeout <= 0 {
-						srv.sendHearbeatMessage()
+					case LEADER:
+						{
+							log.Printf("status LEADER")
+							startTime := time.Now()
+							for srv.heartbeatTimeout > 0 {
+								currentTime := time.Now()
+								duration := currentTime.Sub(startTime).Milliseconds()
+								srv.heartbeatTimeout -= int(duration)
+								startTime = currentTime
+							}
+							if srv.heartbeatTimeout <= 0 {
+								srv.sendHearbeatMessage()
+							}
+							break
+						}
 					}
 					break
 				}
 			}
 		}
 
-	}()
+	}(restartChan)
 
 	// Để giữ cho main goroutine không kết thúc
 	select {}

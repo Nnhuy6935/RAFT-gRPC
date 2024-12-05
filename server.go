@@ -35,13 +35,13 @@ type Server struct {
 	term             int32
 	votedFor         int32
 	log              []string
-	peers            []string
 	mu               sync.Mutex
 	nodes            []raft.NodeInfo
 	consulClient     *api.Client
 	heartbeatTimeout int
 	electionTimeout  int
 	status           int
+	value            int
 }
 
 func NewServer(id int32) *Server {
@@ -60,15 +60,15 @@ func (s *Server) RequestVote(ctx context.Context, req *raft.RequestVoteRequest) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	log.Printf("TERM %d : GET REQUEST VOTE FOR %d", req.Term, req.CandidateId)
-	s.term = req.Term
+	if req.Term > s.term {
+		s.term = req.Term
+		s.votedFor = -1 // Reset votedFor
+	}
 
-	if s.leaderId != -1 || s.status == LEADER {
+	if s.leaderId != -1 || s.status == LEADER || s.status == CANDIDATE {
 		s.electionTimeout = ELECTION_TIMEOUT
 		restartRoroutine(restartChan)
 		return &raft.RequestVoteResponse{Term: s.term, VoteGranted: false}, nil
-	}
-	if req.Term > s.term {
-		s.votedFor = -1 // Reset votedFor
 	}
 
 	if (s.votedFor == -1 || s.votedFor == req.CandidateId) && req.Term == s.term {
@@ -99,15 +99,15 @@ func (s *Server) AppendEntries(ctx context.Context, req *raft.AppendEntriesReque
 func (s *Server) Start() {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 8000+s.id))
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		log.Fatalf("TERM %d: Failed to listen: %v", s.term, err)
 	}
 
 	grpcServer := grpc.NewServer()
 	raft.RegisterRaftServer(grpcServer, s)
 
-	log.Printf("Server %d is listening on port %d", s.id, 8000+s.id)
+	log.Printf("TERM %d: Server %d is listening on port %d", s.term, s.id, 8000+s.id)
 	if err := grpcServer.Serve(listener); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		log.Fatalf("TERM %d: Failed to serve: %v", s.term, err)
 	}
 }
 func (s *Server) startElection() {
@@ -129,7 +129,7 @@ func (s *Server) startElection() {
 
 		conn, err := grpc.Dial(list.Nodes[i].Address, grpc.WithInsecure())
 		if err != nil {
-			log.Printf("Failed to connect to node %s: %v", list.Nodes[i].Address, err)
+			log.Printf("TERM %d: Failed to connect to node %s: %v", s.term, list.Nodes[i].Address, err)
 			continue
 		}
 		// đảm bảo đóng kết nối ngay sau khi sử dụng
@@ -144,7 +144,7 @@ func (s *Server) startElection() {
 
 		resp, err := client.RequestVote(context.Background(), req)
 		if err != nil {
-			log.Printf("Error while requesting vote from node %s: %v", list.Nodes[i].Address, err)
+			log.Printf("TERM %d: Error while requesting vote from node %s: %v", s.term, list.Nodes[i].Address, err)
 			continue
 		}
 		if resp.Term == s.term {
@@ -265,7 +265,7 @@ func (s *Server) RegisterNode(ctx context.Context, node *raft.NodeInfo) (*raft.R
 	parts := strings.Split(node.Address, ":")
 	port, err := strconv.Atoi(parts[1])
 	if err != nil {
-		log.Printf("error when convert from int to string %v", err)
+		log.Printf("TERM %d: error when convert from int to string %v", s.term, err)
 	}
 
 	registration := &api.AgentServiceRegistration{
@@ -277,7 +277,7 @@ func (s *Server) RegisterNode(ctx context.Context, node *raft.NodeInfo) (*raft.R
 
 	error := s.consulClient.Agent().ServiceRegister(registration)
 	if error != nil {
-		log.Printf("error in ServiceRegister: %v", error)
+		log.Printf("TERM %d: error in ServiceRegister: %v", s.term, error)
 		return &raft.Response{Success: false, Message: error.Error()}, nil
 	}
 
@@ -300,7 +300,7 @@ func (s *Server) GetNodeList(ctx context.Context, empty *raft.Empty) (*raft.Node
 		// get service id and convert to int32
 		id, err := strconv.Atoi(service.ID)
 		if err != nil {
-			log.Printf("error %v", err)
+			log.Printf("TERM %d: get list node return error %v", s.term, err)
 		}
 		nodes = append(nodes, raft.NodeInfo{Id: int32(id), Address: fmt.Sprintf("%s:%d", service.Address, service.Port)}) // ID có thể được điều chỉnh
 	}
@@ -344,28 +344,28 @@ func restartRoroutine(restart chan bool) {
 func main() {
 
 	if len(os.Args) < 3 {
-		log.Fatalf("Usage: %s <node_id> <port>", os.Args[0])
+		log.Fatalf("STARTING... : Usage: %s <node_id> <port>", os.Args[0])
 	}
 
 	id, err := strconv.Atoi(os.Args[1])
 	if err != nil {
-		log.Fatalf("Invalid node_id: %v", err)
+		log.Fatalf("STARTING... : Invalid node_id: %v", err)
 	}
 
 	port, err := strconv.Atoi(os.Args[2])
 	if err != nil {
-		log.Fatalf("Invalid port: %v", err)
+		log.Fatalf("STARTING... : Invalid port: %v", err)
 	}
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		log.Fatalf("STARTING... : failed to listen: %v", err)
 	} else {
 		log.Println(lis.Addr())
 	}
 	service, err := NewService(port)
 	if err != nil {
-		log.Fatalf("Error creating service: %v", err)
+		log.Fatalf("STARTING... : Error creating service: %v", err)
 	}
 
 	srv := NewServer(int32(id))
@@ -379,7 +379,7 @@ func main() {
 	node := &raft.NodeInfo{Id: int32(id), Address: fmt.Sprintf("127.0.0.1:%d", port)}
 	response, err := srv.RegisterNode(context.Background(), node)
 	if err != nil {
-		log.Println(err)
+		log.Printf("TERM %d: Error when register node in server", srv.term)
 	}
 
 	log.Println(response.Message)
@@ -391,12 +391,11 @@ func main() {
 		for {
 			err = grpcServer.Serve(lis)
 			if err != nil {
-				log.Fatalf("Failed to serve: %v", err)
+				log.Fatalf("TERM %d: Failed to serve: %v", srv.term, err)
 			}
 		}
 	}()
 	go func(restart chan bool) {
-		log.Printf("ENTER CONSIDER STATUS OF SERVER")
 		for {
 			select {
 			case <-restart:
@@ -408,7 +407,7 @@ func main() {
 					switch srv.status {
 					case FOLLOWER:
 						{
-							log.Printf("status FOLLOWER")
+							log.Printf("TERM %d: status FOLLOWER", srv.term)
 							// trường hợp chưa chọn leader thì sẽ thực hiện đếm ngược thời gian để trở thành candidate
 							if srv.leaderId == -1 {
 								// Chờ một khoảng thời gian electionTimeout
@@ -444,14 +443,14 @@ func main() {
 						}
 					case CANDIDATE:
 						{
-							log.Printf("status CANDIATE")
+							log.Printf("TERM %d: status CANDIATE", srv.term)
 							// bắt đầu gửi request bầu cử
 							srv.runElectionProcess() // Gọi runElectionProcess từ instance của server
 							break
 						}
 					case LEADER:
 						{
-							log.Printf("status LEADER")
+							log.Printf("TERM %d: status LEADER", srv.term)
 							startTime := time.Now()
 							for srv.heartbeatTimeout > 0 {
 								currentTime := time.Now()

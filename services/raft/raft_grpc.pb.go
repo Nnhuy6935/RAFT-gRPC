@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.0
-// source: raft.proto
+// source: services/raft/raft.proto
 
 package raft
 
@@ -19,11 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Raft_RequestVote_FullMethodName   = "/raft.Raft/RequestVote"
-	Raft_AppendEntries_FullMethodName = "/raft.Raft/AppendEntries"
-	Raft_RequestLeader_FullMethodName = "/raft.Raft/RequestLeader"
-	Raft_RegisterNode_FullMethodName  = "/raft.Raft/RegisterNode"
-	Raft_GetNodeList_FullMethodName   = "/raft.Raft/GetNodeList"
+	Raft_RequestVote_FullMethodName            = "/raft.Raft/RequestVote"
+	Raft_AppendEntries_FullMethodName          = "/raft.Raft/AppendEntries"
+	Raft_RequestLeader_FullMethodName          = "/raft.Raft/RequestLeader"
+	Raft_RegisterNode_FullMethodName           = "/raft.Raft/RegisterNode"
+	Raft_GetNodeList_FullMethodName            = "/raft.Raft/GetNodeList"
+	Raft_RequestValueToLeader_FullMethodName   = "/raft.Raft/RequestValueToLeader"
+	Raft_RequestVoteChangeValue_FullMethodName = "/raft.Raft/RequestVoteChangeValue"
 )
 
 // RaftClient is the client API for Raft service.
@@ -34,10 +36,11 @@ const (
 type RaftClient interface {
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesResponse, error)
-	// Phương thức mới
 	RequestLeader(ctx context.Context, in *RequestLeaderRequest, opts ...grpc.CallOption) (*RequestLeaderResponse, error)
 	RegisterNode(ctx context.Context, in *NodeInfo, opts ...grpc.CallOption) (*Response, error)
 	GetNodeList(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*NodeList, error)
+	RequestValueToLeader(ctx context.Context, in *RequestValueToLeaderRequest, opts ...grpc.CallOption) (*Response, error)
+	RequestVoteChangeValue(ctx context.Context, in *RequestVoteChangeValueRequest, opts ...grpc.CallOption) (*RequestVoteChangeValueResponse, error)
 }
 
 type raftClient struct {
@@ -98,6 +101,26 @@ func (c *raftClient) GetNodeList(ctx context.Context, in *Empty, opts ...grpc.Ca
 	return out, nil
 }
 
+func (c *raftClient) RequestValueToLeader(ctx context.Context, in *RequestValueToLeaderRequest, opts ...grpc.CallOption) (*Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Response)
+	err := c.cc.Invoke(ctx, Raft_RequestValueToLeader_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *raftClient) RequestVoteChangeValue(ctx context.Context, in *RequestVoteChangeValueRequest, opts ...grpc.CallOption) (*RequestVoteChangeValueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestVoteChangeValueResponse)
+	err := c.cc.Invoke(ctx, Raft_RequestVoteChangeValue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RaftServer is the server API for Raft service.
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility.
@@ -106,10 +129,11 @@ func (c *raftClient) GetNodeList(ctx context.Context, in *Empty, opts ...grpc.Ca
 type RaftServer interface {
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error)
-	// Phương thức mới
 	RequestLeader(context.Context, *RequestLeaderRequest) (*RequestLeaderResponse, error)
 	RegisterNode(context.Context, *NodeInfo) (*Response, error)
 	GetNodeList(context.Context, *Empty) (*NodeList, error)
+	RequestValueToLeader(context.Context, *RequestValueToLeaderRequest) (*Response, error)
+	RequestVoteChangeValue(context.Context, *RequestVoteChangeValueRequest) (*RequestVoteChangeValueResponse, error)
 	mustEmbedUnimplementedRaftServer()
 }
 
@@ -134,6 +158,12 @@ func (UnimplementedRaftServer) RegisterNode(context.Context, *NodeInfo) (*Respon
 }
 func (UnimplementedRaftServer) GetNodeList(context.Context, *Empty) (*NodeList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetNodeList not implemented")
+}
+func (UnimplementedRaftServer) RequestValueToLeader(context.Context, *RequestValueToLeaderRequest) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestValueToLeader not implemented")
+}
+func (UnimplementedRaftServer) RequestVoteChangeValue(context.Context, *RequestVoteChangeValueRequest) (*RequestVoteChangeValueResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestVoteChangeValue not implemented")
 }
 func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 func (UnimplementedRaftServer) testEmbeddedByValue()              {}
@@ -246,6 +276,42 @@ func _Raft_GetNodeList_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Raft_RequestValueToLeader_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestValueToLeaderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).RequestValueToLeader(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_RequestValueToLeader_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).RequestValueToLeader(ctx, req.(*RequestValueToLeaderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Raft_RequestVoteChangeValue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestVoteChangeValueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).RequestVoteChangeValue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_RequestVoteChangeValue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).RequestVoteChangeValue(ctx, req.(*RequestVoteChangeValueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -273,7 +339,15 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetNodeList",
 			Handler:    _Raft_GetNodeList_Handler,
 		},
+		{
+			MethodName: "RequestValueToLeader",
+			Handler:    _Raft_RequestValueToLeader_Handler,
+		},
+		{
+			MethodName: "RequestVoteChangeValue",
+			Handler:    _Raft_RequestVoteChangeValue_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "raft.proto",
+	Metadata: "services/raft/raft.proto",
 }

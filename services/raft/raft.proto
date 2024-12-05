@@ -50,6 +50,7 @@ message VoteResponse {
 message RequestLeaderRequest {
     int32 term = 1; // Thời gian hiện tại của node
     int32 leaderId = 2;     // id của leader
+    int32 value = 3;
 }
 
 message RequestLeaderResponse {
@@ -76,15 +77,41 @@ message Response {
     string message = 2; // Thông điệp chi tiết
 }
 
+// thông tin về giá trị request tới leader
+message RequestValueToLeaderRequest{
+    int32 nodeRequestId = 1;
+    int32 requestValue = 2;
+    int32 term = 3;
+}
+
+// thông tin về request leader gửi tới các node để change value
+message RequestVoteChangeValueRequest{
+    int32 leaderId = 1 ;
+    int32 term = 2;
+    int32 requestValue = 3;
+}
+
+// phản hồi các node về việc change value 
+message RequestVoteChangeValueResponse{
+    int32 leaderId = 3;
+    int32 term = 2;
+    bool voteGranted = 1;
+}
 
 // Dịch vụ Raft
 service Raft {
     rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
 
-    // Phương thức mới
+    
     rpc RequestLeader(RequestLeaderRequest) returns (RequestLeaderResponse); 
     rpc RegisterNode(NodeInfo) returns (Response); 
     rpc GetNodeList(Empty) returns (NodeList);
+
+    rpc RequestValueToLeader(RequestValueToLeaderRequest) returns (Response);
+    rpc RequestVoteChangeValue(RequestVoteChangeValueRequest) returns (RequestVoteChangeValueResponse);
+    
+
 }
+
 

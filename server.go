@@ -360,7 +360,7 @@ func (s *Server) collectVoteChangeValue() (*raft.Response, error) {
 
 			client := raft.NewRaftClient(conn)
 
-			s.term++
+			// s.term++
 			req := &raft.RequestVoteChangeValueRequest{
 				LeaderId:     s.id,
 				Term:         s.term,
